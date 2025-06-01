@@ -20,6 +20,12 @@ type UserRequest struct {
 	Role     string `form:"role" validate:"required"`
 }
 
+type UserRequestUpdate struct {
+	Name  string `form:"name" validate:"required,min=2"`
+	Email string `form:"email" validate:"required,email"`
+	Role  string `form:"role" validate:"required"`
+}
+
 type UserResponse struct {
 	Id        int       `json:"id"`
 	Name      string    `json:"name"`

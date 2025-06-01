@@ -151,15 +151,13 @@ func UpdateUser(c *gin.Context) {
 		return
 	}
 
-	var req model.UserRequest
+	var req model.UserRequestUpdate
 
-	//  Validasi menggunakan ShouldBind yang berfungsi untuk memeriksa apakah semua field yang diperlukan terisi
 	if err := c.ShouldBind(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
 
-	// Validasi menggunakan validator
 	err = config.Validate.Struct(req)
 	if err != nil {
 		errors := []string{}
@@ -175,7 +173,6 @@ func UpdateUser(c *gin.Context) {
 	password := c.PostForm("password")
 	role := c.PostForm("role")
 
-	// check apakah data ada dengan id tersebut
 	var user model.User
 	err = config.DB.QueryRow("SELECT id FROM users WHERE id = @p1", sql.Named("p1", id)).Scan(&user.Id)
 	if err == sql.ErrNoRows {
@@ -183,7 +180,6 @@ func UpdateUser(c *gin.Context) {
 		return
 	}
 
-	// check apakah email sudah ada atau tidak
 	var userByEmail model.User
 	err = config.DB.QueryRow("SELECT id FROM users WHERE email = @p1 AND id != @p2", sql.Named("p1", email), sql.Named("p2", id)).Scan(&userByEmail.Id)
 	if err == nil {
@@ -191,41 +187,49 @@ func UpdateUser(c *gin.Context) {
 		return
 	}
 
-	// hash password
 	hashedPassword, err := utils.HashPassword(password)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to hash password"})
 		return
 	}
 
-	//upload profile
-	file, err := c.FormFile("profile")
-	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Profile image is required"})
-		return
-	}
-
-	os.MkdirAll("uploads", os.ModePerm)
-	filename := uuid.New().String() + filepath.Ext(file.Filename)
-	savePath := "uploads/" + filename
-	if err := c.SaveUploadedFile(file, savePath); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to upload image"})
-		return
-	}
-
-	// hapus file lama jika ada inputan baru
+	// Ambil gambar lama dari database
 	var oldImage string
 	err = config.DB.QueryRow("SELECT profile FROM users WHERE id = @p1", sql.Named("p1", id)).Scan(&oldImage)
-	if err == nil && oldImage != "" {
-		_, filename := filepath.Split(oldImage)
-		os.Remove("uploads/" + filename)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to get old profile"})
+		return
+	}
+
+	// Cek apakah ada file baru yang diupload
+	file, err := c.FormFile("profile")
+	var profilePath string
+	if err == nil {
+		// Upload file baru
+		os.MkdirAll("uploads", os.ModePerm)
+		filename := uuid.New().String() + filepath.Ext(file.Filename)
+		savePath := "uploads/" + filename
+		if err := c.SaveUploadedFile(file, savePath); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to upload image"})
+			return
+		}
+		profilePath = "/uploads/" + filename
+
+		// Hapus file lama jika ada
+		if oldImage != "" {
+			_, oldFile := filepath.Split(oldImage)
+			os.Remove("uploads/" + oldFile)
+		}
+	} else {
+		// Gunakan gambar lama
+		profilePath = oldImage
 	}
 
 	_, err = config.DB.Exec(`
 		UPDATE users
 		SET name = @p1, email = @p2, password = @p3, profile = @p4, role = @p5, updated_at = @p6
 		WHERE id = @p7
-	`, name, email, hashedPassword, "/uploads/"+filename, role, time.Now(), id)
+	`, name, email, hashedPassword, profilePath, role, time.Now(), id)
 
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update data", "detail": err.Error()})
@@ -235,7 +239,6 @@ func UpdateUser(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{
 		"message": "Data updated successfully",
 	})
-
 }
 
 // delete data
