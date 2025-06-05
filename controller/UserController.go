@@ -187,12 +187,6 @@ func UpdateUser(c *gin.Context) {
 		return
 	}
 
-	hashedPassword, err := utils.HashPassword(password)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to hash password"})
-		return
-	}
-
 	// Ambil gambar lama dari database
 	var oldImage string
 	err = config.DB.QueryRow("SELECT profile FROM users WHERE id = @p1", sql.Named("p1", id)).Scan(&oldImage)
@@ -225,12 +219,32 @@ func UpdateUser(c *gin.Context) {
 		profilePath = oldImage
 	}
 
-	_, err = config.DB.Exec(`
-		UPDATE users
-		SET name = @p1, email = @p2, password = @p3, profile = @p4, role = @p5, updated_at = @p6
-		WHERE id = @p7
-	`, name, email, hashedPassword, profilePath, role, time.Now(), id)
+	// Bangun query dan parameter secara dinamis
+	query := `
+	UPDATE users
+	SET name = @name, email = @email, profile = @profile, role = @role, updated_at = @updated_at`
+	args := []interface{}{
+		sql.Named("name", name),
+		sql.Named("email", email),
+		sql.Named("profile", profilePath),
+		sql.Named("role", role),
+		sql.Named("updated_at", time.Now()),
+	}
 
+	if password != "" {
+		hashedPassword, err := utils.HashPassword(password)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to hash password"})
+			return
+		}
+		query += `, password = @password`
+		args = append(args, sql.Named("password", hashedPassword))
+	}
+
+	query += ` WHERE id = @id`
+	args = append(args, sql.Named("id", id))
+
+	_, err = config.DB.Exec(query, args...)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update data", "detail": err.Error()})
 		return

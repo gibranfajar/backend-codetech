@@ -119,12 +119,6 @@ func UpdateCategoryFaq(c *gin.Context) {
 		return
 	}
 
-	file, err := c.FormFile("icon")
-	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Icon is required"})
-		return
-	}
-
 	// Ambil data lama untuk dapatkan icon lama
 	var oldIcon string
 	err = config.DB.QueryRow("SELECT icon FROM category_faqs WHERE id = @p1", sql.Named("p1", id)).Scan(&oldIcon)
@@ -136,28 +130,30 @@ func UpdateCategoryFaq(c *gin.Context) {
 		return
 	}
 
-	// hapus file lama jika ada
+	icon := oldIcon // default gunakan icon lama
 
-	os.MkdirAll("uploads", os.ModePerm)
-	filename := uuid.New().String() + filepath.Ext(file.Filename)
-	savePath := "uploads/" + filename
-	if err := c.SaveUploadedFile(file, savePath); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to upload image"})
-		return
-	}
+	file, err := c.FormFile("icon")
+	if err == nil {
+		// Jika file diupload, simpan dan hapus file lama
+		os.MkdirAll("uploads", os.ModePerm)
+		filename := uuid.New().String() + filepath.Ext(file.Filename)
+		savePath := "uploads/" + filename
+		if err := c.SaveUploadedFile(file, savePath); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to upload image"})
+			return
+		}
 
-	if oldIcon != "" {
-		_, imageFile := filepath.Split(oldIcon)
-		imagePath := filepath.Join("uploads", imageFile)
-		if _, err := os.Stat(imagePath); err == nil {
-			if err := os.Remove(imagePath); err != nil {
-				c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to delete image", "detail": err.Error()})
-				return
+		// Hapus icon lama jika ada
+		if oldIcon != "" {
+			_, imageFile := filepath.Split(oldIcon)
+			imagePath := filepath.Join("uploads", imageFile)
+			if _, err := os.Stat(imagePath); err == nil {
+				_ = os.Remove(imagePath) // jika gagal dihapus, bisa di-log tapi tidak perlu menghentikan proses
 			}
 		}
-	}
 
-	icon := "/uploads/" + filename
+		icon = "/uploads/" + filename // set icon baru
+	}
 
 	_, err = config.DB.Exec(`
 		UPDATE category_faqs
@@ -173,7 +169,6 @@ func UpdateCategoryFaq(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{
 		"message": "Data updated successfully",
 	})
-
 }
 
 // delete data

@@ -27,20 +27,24 @@ func Login(c *gin.Context) {
 		return
 	}
 
-	// compare password
+	// Compare password
 	err = bcrypt.CompareHashAndPassword([]byte(user.Password), []byte(password))
 	if err != nil {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid email or password"})
 		return
 	}
 
-	// generate JWT
+	// Generate JWT token expired in 1 hour
+	expirationTime := time.Now().Add(1 * time.Hour)
+
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{
 		"user_id": user.Id,
-		"exp":     time.Now().Add(time.Hour * 24).Unix(),
+		"exp":     expirationTime.Unix(),
+		"iat":     time.Now().Unix(),
 	})
 
-	tokenString, err := token.SignedString(jwtSecret)
+	// Gunakan secret key yang sesuai dengan middleware
+	tokenString, err := token.SignedString([]byte("secret-codetech"))
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to generate token"})
 		return
