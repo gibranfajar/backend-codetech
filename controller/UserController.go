@@ -55,12 +55,20 @@ func GetUser(c *gin.Context) {
 		return
 	}
 
-	err := config.DB.QueryRow("SELECT id, name, email, profile, role, created_at, updated_at FROM users WHERE id = @p1", sql.Named("p1", id)).Scan(
+	// ✅ Gunakan placeholder PostgreSQL ($1)
+	err := config.DB.QueryRow(`
+		SELECT id, name, email, profile, role, created_at, updated_at
+		FROM users
+		WHERE id = $1
+	`, id).Scan(
 		&user.Id, &user.Name, &user.Email, &user.Profile, &user.Role, &user.CreatedAt, &user.UpdatedAt,
 	)
 
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to fetch data", "detail": err.Error()})
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error":  "Failed to fetch data",
+			"detail": err.Error(),
+		})
 		return
 	}
 
