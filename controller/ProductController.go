@@ -20,23 +20,40 @@ import (
 func GetAllProduct(c *gin.Context) {
 	var products []model.Product
 
-	rows, err := config.DB.Query("SELECT id, title, description, price, discount, type, icon, created_at, updated_at FROM products")
+	rows, err := config.DB.Query(`
+		SELECT id, title, description, price, discount, type, icon, created_at, updated_at
+		FROM products
+		ORDER BY created_at DESC
+	`)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to fetch data", "detail": err.Error()})
 		return
 	}
-
-	if rows == nil {
-		c.JSON(http.StatusOK, gin.H{"message": "No data found"})
-	}
+	defer rows.Close()
 
 	for rows.Next() {
 		var product model.Product
-		if err := rows.Scan(&product.Id, &product.Title, &product.Description, &product.Price, &product.Discount, &product.Type, &product.Icon, &product.CreatedAt, &product.UpdatedAt); err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to fetch data", "detail": err.Error()})
+		if err := rows.Scan(
+			&product.Id,
+			&product.Title,
+			&product.Description,
+			&product.Price,
+			&product.Discount,
+			&product.Type,
+			&product.Icon,
+			&product.CreatedAt,
+			&product.UpdatedAt,
+		); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to parse data", "detail": err.Error()})
 			return
 		}
 		products = append(products, product)
+	}
+
+	// Cek apakah ada data
+	if len(products) == 0 {
+		c.JSON(http.StatusOK, gin.H{"message": "No data found", "data": []model.Product{}})
+		return
 	}
 
 	c.JSON(http.StatusOK, gin.H{
@@ -60,9 +77,8 @@ func CreateProduct(c *gin.Context) {
 	}
 
 	// Validasi menggunakan validator
-	err := config.Validate.Struct(req)
-	if err != nil {
-		errors := []string{}
+	if err := config.Validate.Struct(req); err != nil {
+		var errors []string
 		for _, err := range err.(validator.ValidationErrors) {
 			errors = append(errors, fmt.Sprintf("%s is %s", err.Field(), err.Tag()))
 		}
@@ -91,8 +107,7 @@ func CreateProduct(c *gin.Context) {
 	var icon string
 	file, err := c.FormFile("icon")
 	if err == nil {
-		err := os.MkdirAll("uploads", os.ModePerm)
-		if err != nil {
+		if err := os.MkdirAll("uploads", os.ModePerm); err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create uploads directory"})
 			return
 		}
@@ -108,11 +123,12 @@ func CreateProduct(c *gin.Context) {
 		icon = "/uploads/" + filename
 	}
 
-	// Simpan ke database
-	_, err = config.DB.Exec(`
+	// Simpan ke database PostgreSQL
+	query := `
 		INSERT INTO products (title, description, price, discount, type, icon, created_at, updated_at)
-		VALUES (@p1, @p2, @p3, @p4, @p5, @p6, @p7, @p8)
-	`, title, description, price, discount, typeProduct, icon, time.Now(), time.Now())
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+	`
+	_, err = config.DB.Exec(query, title, description, price, discount, typeProduct, icon, time.Now(), time.Now())
 
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{
@@ -145,9 +161,8 @@ func UpdateProduct(c *gin.Context) {
 	}
 
 	// Validasi menggunakan validator
-	err = config.Validate.Struct(req)
-	if err != nil {
-		errors := []string{}
+	if err := config.Validate.Struct(req); err != nil {
+		var errors []string
 		for _, err := range err.(validator.ValidationErrors) {
 			errors = append(errors, fmt.Sprintf("%s is %s", err.Field(), err.Tag()))
 		}
@@ -180,7 +195,7 @@ func UpdateProduct(c *gin.Context) {
 
 	// Ambil data lama (icon lama)
 	var oldIcon string
-	err = config.DB.QueryRow("SELECT icon FROM products WHERE id = @p1", sql.Named("p1", id)).Scan(&oldIcon)
+	err = config.DB.QueryRow("SELECT icon FROM products WHERE id = $1", id).Scan(&oldIcon)
 	if err == sql.ErrNoRows {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Product not found"})
 		return
@@ -195,8 +210,7 @@ func UpdateProduct(c *gin.Context) {
 	file, err := c.FormFile("icon")
 	if err == nil {
 		// Buat folder upload jika belum ada
-		err := os.MkdirAll("uploads", os.ModePerm)
-		if err != nil {
+		if err := os.MkdirAll("uploads", os.ModePerm); err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create uploads folder"})
 			return
 		}
@@ -210,25 +224,25 @@ func UpdateProduct(c *gin.Context) {
 			return
 		}
 
-		// Update icon path
 		iconPath = "/" + savePath
 
 		// Hapus file lama jika berbeda
 		if oldIcon != "" {
 			_, imageFile := filepath.Split(oldIcon)
-			imagePath := filepath.Join("uploads", imageFile)
-			if _, err := os.Stat(imagePath); err == nil {
-				_ = os.Remove(imagePath) // Error diabaikan agar update tetap lanjut
+			oldFilePath := filepath.Join("uploads", imageFile)
+			if _, err := os.Stat(oldFilePath); err == nil {
+				_ = os.Remove(oldFilePath) // Error diabaikan agar update tetap lanjut
 			}
 		}
 	}
 
-	// Update data
-	_, err = config.DB.Exec(`
+	// Update data PostgreSQL
+	query := `
 		UPDATE products
-		SET title = @p1, description = @p2, price = @p3, discount = @p4, type = @p5, icon = @p6, updated_at = @p7
-		WHERE id = @p8
-	`, title, description, price, discount, typeProduct, iconPath, time.Now(), id)
+		SET title = $1, description = $2, price = $3, discount = $4, type = $5, icon = $6, updated_at = $7
+		WHERE id = $8
+	`
+	_, err = config.DB.Exec(query, title, description, price, discount, typeProduct, iconPath, time.Now(), id)
 
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update data", "detail": err.Error()})
@@ -247,9 +261,9 @@ func DeleteProduct(c *gin.Context) {
 		return
 	}
 
-	// Ambil data lama untuk dapatkan icon lama
+	// Ambil icon lama untuk hapus file-nya
 	var oldIcon string
-	err = config.DB.QueryRow("SELECT icon FROM products WHERE id = @p1", sql.Named("p1", id)).Scan(&oldIcon)
+	err = config.DB.QueryRow("SELECT icon FROM products WHERE id = $1", id).Scan(&oldIcon)
 	if err == sql.ErrNoRows {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Product not found"})
 		return
@@ -258,19 +272,21 @@ func DeleteProduct(c *gin.Context) {
 		return
 	}
 
-	// hapus file lama jika ada
+	// Hapus file icon lama jika ada
 	if oldIcon != "" {
 		_, imageFile := filepath.Split(oldIcon)
 		imagePath := filepath.Join("uploads", imageFile)
 		if _, err := os.Stat(imagePath); err == nil {
 			if err := os.Remove(imagePath); err != nil {
-				c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to delete image", "detail": err.Error()})
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to delete image file", "detail": err.Error()})
 				return
 			}
 		}
 	}
 
-	_, err = config.DB.Exec("DELETE FROM products WHERE id = @p1", sql.Named("p1", id))
+	// Hapus data dari PostgreSQL
+	query := `DELETE FROM products WHERE id = $1`
+	_, err = config.DB.Exec(query, id)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to delete data", "detail": err.Error()})
 		return

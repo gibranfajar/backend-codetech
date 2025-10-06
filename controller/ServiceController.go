@@ -3,6 +3,7 @@ package controller
 import (
 	"database/sql"
 	"fmt"
+	"log"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -17,88 +18,87 @@ import (
 	"github.com/gosimple/slug"
 )
 
-// get all data
+// GetAllServices - get all data
 func GetAllServices(c *gin.Context) {
 	var services []model.Service
 
-	rows, err := config.DB.Query("SELECT id, title, slug, description, icon, created_at, updated_at FROM services")
+	rows, err := config.DB.Query(`SELECT id, title, slug, description, icon, created_at, updated_at FROM services`)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to fetch data", "detail": err.Error()})
 		return
 	}
-
-	if rows == nil {
-		c.JSON(http.StatusOK, gin.H{"message": "No data found"})
-	}
+	defer rows.Close()
 
 	for rows.Next() {
 		var service model.Service
 		if err := rows.Scan(&service.Id, &service.Title, &service.Slug, &service.Description, &service.Icon, &service.CreatedAt, &service.UpdatedAt); err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to fetch data", "detail": err.Error()})
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to scan data", "detail": err.Error()})
 			return
 		}
 		services = append(services, service)
 	}
 
-	c.JSON(http.StatusOK, gin.H{
-		"data": services,
-	})
-}
-
-// create data
-func CreateService(c *gin.Context) {
-	title := c.PostForm("title")
-	description := c.PostForm("description")
-	file, err := c.FormFile("icon")
-	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Icon is required"})
+	if len(services) == 0 {
+		c.JSON(http.StatusOK, gin.H{"message": "No data found"})
 		return
 	}
 
-	// validasi
+	c.JSON(http.StatusOK, gin.H{"data": services})
+}
+
+// CreateService - create new data
+func CreateService(c *gin.Context) {
+	title := c.PostForm("title")
+	description := c.PostForm("description")
+
+	// Validasi input
 	var req model.ServiceRequest
 	if err := c.ShouldBind(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
 
-	// Validasi menggunakan validator
-	err = config.Validate.Struct(req)
-	if err != nil {
-		errors := []string{}
-		for _, err := range err.(validator.ValidationErrors) {
-			errors = append(errors, fmt.Sprintf("%s is %s", err.Field(), err.Tag()))
+	if err := config.Validate.Struct(req); err != nil {
+		var errors []string
+		for _, e := range err.(validator.ValidationErrors) {
+			errors = append(errors, fmt.Sprintf("%s is %s", e.Field(), e.Tag()))
 		}
 		c.JSON(http.StatusBadRequest, gin.H{"errors": errors})
 		return
 	}
 
+	// Upload icon wajib
+	file, err := c.FormFile("icon")
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Icon is required"})
+		return
+	}
+
 	os.MkdirAll("uploads", os.ModePerm)
 	filename := uuid.New().String() + filepath.Ext(file.Filename)
-	savePath := "uploads/" + filename
+	savePath := filepath.Join("uploads", filename)
+
 	if err := c.SaveUploadedFile(file, savePath); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to upload image"})
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to upload icon"})
 		return
 	}
 
 	icon := "/uploads/" + filename
 
-	_, err = config.DB.Exec(`
+	query := `
 		INSERT INTO services (title, slug, description, icon, created_at, updated_at)
-		VALUES (@p1, @p2, @p3, @p4, @p5, @p6)
-	`, title, slug.Make(title), description, icon, time.Now(), time.Now())
-
+		VALUES ($1, $2, $3, $4, $5, $6)
+	`
+	_, err = config.DB.Exec(query, title, slug.Make(title), description, icon, time.Now(), time.Now())
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to insert data", "detail": err.Error()})
 		return
 	}
 
-	c.JSON(http.StatusCreated, gin.H{
-		"message": "Data created successfully",
-	})
+	c.JSON(http.StatusCreated, gin.H{"message": "Data created successfully"})
 }
 
-// update data
+// UpdateService - update data
 func UpdateService(c *gin.Context) {
 	idParam := c.Param("id")
 	id, err := strconv.Atoi(idParam)
@@ -113,12 +113,10 @@ func UpdateService(c *gin.Context) {
 		return
 	}
 
-	// Validasi menggunakan validator
-	err = config.Validate.Struct(req)
-	if err != nil {
-		errors := []string{}
-		for _, err := range err.(validator.ValidationErrors) {
-			errors = append(errors, fmt.Sprintf("%s is %s", err.Field(), err.Tag()))
+	if err := config.Validate.Struct(req); err != nil {
+		var errors []string
+		for _, e := range err.(validator.ValidationErrors) {
+			errors = append(errors, fmt.Sprintf("%s is %s", e.Field(), e.Tag()))
 		}
 		c.JSON(http.StatusBadRequest, gin.H{"errors": errors})
 		return
@@ -127,61 +125,58 @@ func UpdateService(c *gin.Context) {
 	title := c.PostForm("title")
 	description := c.PostForm("description")
 
-	// Ambil data lama untuk dapatkan icon lama
 	var oldIcon string
-	err = config.DB.QueryRow("SELECT icon FROM services WHERE id = @p1", sql.Named("p1", id)).Scan(&oldIcon)
+	err = config.DB.QueryRow("SELECT icon FROM services WHERE id = $1", id).Scan(&oldIcon)
 	if err == sql.ErrNoRows {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Service not found"})
 		return
 	} else if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to fetch existing service", "detail": err.Error()})
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to fetch existing data", "detail": err.Error()})
 		return
 	}
 
-	iconPath := oldIcon // default: gunakan icon lama
+	iconPath := oldIcon
 
+	// Handle upload icon baru
 	file, err := c.FormFile("icon")
 	if err == nil {
-		// Jika ada file baru, upload dan ganti
 		os.MkdirAll("uploads", os.ModePerm)
 		filename := uuid.New().String() + filepath.Ext(file.Filename)
-		savePath := "uploads/" + filename
+		savePath := filepath.Join("uploads", filename)
+
 		if err := c.SaveUploadedFile(file, savePath); err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to upload image"})
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to upload new icon"})
 			return
 		}
+
+		// Hapus icon lama
+		if oldIcon != "" {
+			_, oldFile := filepath.Split(oldIcon)
+			oldPath := filepath.Join("uploads", oldFile)
+			if _, err := os.Stat(oldPath); err == nil {
+				os.Remove(oldPath)
+			}
+		}
+
 		iconPath = "/uploads/" + filename
 	}
 
-	// hapus file lama jika ada
-	if oldIcon != "" {
-		_, iconFile := filepath.Split(oldIcon)
-		iconPath := filepath.Join("uploads", iconFile)
-		if _, err := os.Stat(iconPath); err == nil {
-			if err := os.Remove(iconPath); err != nil {
-				c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to delete image", "detail": err.Error()})
-				return
-			}
-		}
-	}
-
-	_, err = config.DB.Exec(`
+	// Update ke DB
+	query := `
 		UPDATE services
-		SET title = @p1, slug = @p2, description = @p3, icon = @p4, updated_at = @p5
-		WHERE id = @p6
-	`, title, slug.Make(title), description, iconPath, time.Now(), id)
-
+		SET title = $1, slug = $2, description = $3, icon = $4, updated_at = $5
+		WHERE id = $6
+	`
+	_, err = config.DB.Exec(query, title, slug.Make(title), description, iconPath, time.Now(), id)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update data", "detail": err.Error()})
 		return
 	}
 
-	c.JSON(http.StatusOK, gin.H{
-		"message": "Data updated successfully",
-	})
+	c.JSON(http.StatusOK, gin.H{"message": "Data updated successfully"})
 }
 
-// delete data
+// DeleteService - delete data
 func DeleteService(c *gin.Context) {
 	idParam := c.Param("id")
 	id, err := strconv.Atoi(idParam)
@@ -190,40 +185,31 @@ func DeleteService(c *gin.Context) {
 		return
 	}
 
-	// Ambil data lama untuk dapatkan icon lama
 	var oldIcon string
-	err = config.DB.QueryRow("SELECT icon FROM services WHERE id = @p1", sql.Named("p1", id)).Scan(&oldIcon)
+	err = config.DB.QueryRow("SELECT icon FROM services WHERE id = $1", id).Scan(&oldIcon)
 	if err == sql.ErrNoRows {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Service not found"})
 		return
 	} else if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to fetch existing service", "detail": err.Error()})
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to fetch data", "detail": err.Error()})
 		return
 	}
 
-	_, err = config.DB.Exec(`
-		DELETE FROM services
-		WHERE id = @p1
-	`, id)
-
+	_, err = config.DB.Exec("DELETE FROM services WHERE id = $1", id)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to delete data", "detail": err.Error()})
 		return
 	}
 
-	// Hapus file gambar jika ada
 	if oldIcon != "" {
 		_, imageFile := filepath.Split(oldIcon)
 		imagePath := filepath.Join("uploads", imageFile)
 		if _, err := os.Stat(imagePath); err == nil {
 			if err := os.Remove(imagePath); err != nil {
-				c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to delete image", "detail": err.Error()})
-				return
+				log.Printf("Warning: failed to delete icon file: %v", err)
 			}
 		}
 	}
 
-	c.JSON(http.StatusOK, gin.H{
-		"message": "Data deleted successfully",
-	})
+	c.JSON(http.StatusOK, gin.H{"message": "Data deleted successfully"})
 }

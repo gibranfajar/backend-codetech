@@ -67,6 +67,7 @@ func CreatePage(c *gin.Context) {
 		return
 	}
 
+	// Upload banner wajib
 	file, err := c.FormFile("banner")
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Banner image is required"})
@@ -81,13 +82,27 @@ func CreatePage(c *gin.Context) {
 		return
 	}
 
-	_, err = config.DB.Exec(`
+	// Simpan ke database PostgreSQL
+	query := `
 		INSERT INTO pages (title, slug, type, description, banner, created_at, updated_at)
-		VALUES (@p1, @p2, @p3, @p4, @p5, @p6, @p7)
-	`, title, slug.Make(title), types, description, "/uploads/"+filename, time.Now(), time.Now())
+		VALUES ($1, $2, $3, $4, $5, $6, $7)
+	`
+	_, err = config.DB.Exec(
+		query,
+		title,
+		slug.Make(title),
+		types,
+		description,
+		"/uploads/"+filename,
+		time.Now(),
+		time.Now(),
+	)
 
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to insert data", "detail": err.Error()})
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error":  "Failed to insert data",
+			"detail": err.Error(),
+		})
 		return
 	}
 
@@ -114,7 +129,7 @@ func UpdatePage(c *gin.Context) {
 	// Validasi menggunakan validator
 	err = config.Validate.Struct(req)
 	if err != nil {
-		errors := []string{}
+		var errors []string
 		for _, err := range err.(validator.ValidationErrors) {
 			errors = append(errors, fmt.Sprintf("%s is %s", err.Field(), err.Tag()))
 		}
@@ -126,22 +141,25 @@ func UpdatePage(c *gin.Context) {
 	description := c.PostForm("description")
 	types := c.PostForm("type")
 
-	// Ambil data lama untuk dapatkan banner lama
+	// Ambil banner lama dari database
 	var oldBanner string
-	err = config.DB.QueryRow("SELECT banner FROM pages WHERE id = @p1", sql.Named("p1", id)).Scan(&oldBanner)
+	err = config.DB.QueryRow("SELECT banner FROM pages WHERE id = $1", id).Scan(&oldBanner)
 	if err == sql.ErrNoRows {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Page not found"})
 		return
 	} else if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to fetch existing page", "detail": err.Error()})
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error":  "Failed to fetch existing page",
+			"detail": err.Error(),
+		})
 		return
 	}
 
 	bannerPath := oldBanner // default: gunakan banner lama
 
+	// Cek apakah ada file baru
 	file, err := c.FormFile("banner")
 	if err == nil {
-		// Jika ada file baru, upload dan ganti
 		os.MkdirAll("uploads", os.ModePerm)
 		filename := uuid.New().String() + filepath.Ext(file.Filename)
 		savePath := filepath.Join("uploads", filename)
@@ -151,7 +169,7 @@ func UpdatePage(c *gin.Context) {
 			return
 		}
 
-		// Hapus file lama (jika ada)
+		// Hapus file lama jika ada
 		if oldBanner != "" {
 			_, oldFile := filepath.Split(oldBanner)
 			oldFilePath := filepath.Join("uploads", oldFile)
@@ -163,31 +181,38 @@ func UpdatePage(c *gin.Context) {
 		bannerPath = "/uploads/" + filename
 	}
 
-	// Update data
+	// Update data di PostgreSQL
 	query := `
-        UPDATE pages 
-        SET title = @p1, slug = @p2, type = @p3, description = @p4, banner = @p5, updated_at = @p6 
-        WHERE id = @p7
-    `
+		UPDATE pages
+		SET title = $1,
+			slug = $2,
+			type = $3,
+			description = $4,
+			banner = $5,
+			updated_at = $6
+		WHERE id = $7
+	`
+
 	_, err = config.DB.Exec(
 		query,
-		sql.Named("p1", title),
-		sql.Named("p2", slug.Make(title)),
-		sql.Named("p3", types),
-		sql.Named("p4", description),
-		sql.Named("p5", bannerPath),
-		sql.Named("p6", time.Now()),
-		sql.Named("p7", id),
+		title,
+		slug.Make(title),
+		types,
+		description,
+		bannerPath,
+		time.Now(),
+		id,
 	)
 
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update page", "detail": err.Error()})
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error":  "Failed to update page",
+			"detail": err.Error(),
+		})
 		return
 	}
 
-	c.JSON(http.StatusOK, gin.H{
-		"message": "Page updated successfully",
-	})
+	c.JSON(http.StatusOK, gin.H{"message": "Page updated successfully"})
 }
 
 // delete
@@ -200,20 +225,26 @@ func DeletePage(c *gin.Context) {
 	}
 
 	var page model.Pages
-	query := "SELECT id, banner FROM pages WHERE id = @id"
-	err = config.DB.QueryRow(query, sql.Named("id", id)).Scan(&page.Id, &page.Banner)
+	query := "SELECT id, banner FROM pages WHERE id = $1"
+	err = config.DB.QueryRow(query, id).Scan(&page.Id, &page.Banner)
 	if err == sql.ErrNoRows {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Page not found"})
 		return
 	} else if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Database error", "detail": err.Error()})
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error":  "Database error",
+			"detail": err.Error(),
+		})
 		return
 	}
 
-	deleteQuery := "DELETE FROM pages WHERE id = @id"
-	result, err := config.DB.Exec(deleteQuery, sql.Named("id", id))
+	deleteQuery := "DELETE FROM pages WHERE id = $1"
+	result, err := config.DB.Exec(deleteQuery, id)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to delete page", "detail": err.Error()})
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error":  "Failed to delete page",
+			"detail": err.Error(),
+		})
 		return
 	}
 
@@ -223,12 +254,15 @@ func DeletePage(c *gin.Context) {
 		return
 	}
 
-	_, fileName := filepath.Split(page.Banner)
-	filePath := filepath.Join("uploads", fileName)
+	// Hapus file banner dari folder uploads jika ada
+	if page.Banner != "" {
+		_, fileName := filepath.Split(page.Banner)
+		filePath := filepath.Join("uploads", fileName)
 
-	if _, err := os.Stat(filePath); err == nil {
-		if err := os.Remove(filePath); err != nil {
-			log.Printf("Failed to delete banner file: %s", err)
+		if _, err := os.Stat(filePath); err == nil {
+			if err := os.Remove(filePath); err != nil {
+				log.Printf("Failed to delete banner file: %s", err)
+			}
 		}
 	}
 

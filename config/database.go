@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"log"
 
-	_ "github.com/denisenkom/go-mssqldb"
+	_ "github.com/lib/pq"
 )
 
 var DB *sql.DB
@@ -13,9 +13,9 @@ var DB *sql.DB
 func ConnectDB() {
 	var err error
 
-	connString := "sqlserver://admin:Celcius@1980@103.102.153.62:1433?database=codetech"
+	connString := "user=postgres password=admin@2004 host=127.0.0.1 port=5432 dbname=codetech sslmode=disable"
 
-	DB, err = sql.Open("sqlserver", connString)
+	DB, err = sql.Open("postgres", connString)
 	if err != nil {
 		log.Fatal("Error membuka koneksi:", err)
 	}

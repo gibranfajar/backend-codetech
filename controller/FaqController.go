@@ -27,28 +27,43 @@ func GetAllFaq(c *gin.Context) {
 			f.updated_at
 		FROM faqs f
 		JOIN category_faqs c ON f.category_id = c.id
+		ORDER BY f.created_at DESC
 	`)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to fetch data", "detail": err.Error()})
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error":  "Failed to fetch data",
+			"detail": err.Error(),
+		})
 		return
 	}
-
-	if rows == nil {
-		c.JSON(http.StatusOK, gin.H{"message": "No data found"})
-	}
+	defer rows.Close()
 
 	for rows.Next() {
 		var faq model.FaqResponse
-		if err := rows.Scan(&faq.Id, &faq.Question, &faq.Answer, &faq.Category, &faq.CreatedAt, &faq.UpdatedAt); err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to fetch data", "detail": err.Error()})
+		if err := rows.Scan(
+			&faq.Id,
+			&faq.Question,
+			&faq.Answer,
+			&faq.Category,
+			&faq.CreatedAt,
+			&faq.UpdatedAt,
+		); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{
+				"error":  "Failed to parse data",
+				"detail": err.Error(),
+			})
 			return
 		}
 		faqs = append(faqs, faq)
 	}
 
-	c.JSON(http.StatusOK, gin.H{
-		"data": faqs,
-	})
+	// Cek jika tidak ada data
+	if len(faqs) == 0 {
+		c.JSON(http.StatusOK, gin.H{"message": "No data found"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"data": faqs})
 }
 
 // create data
@@ -64,25 +79,30 @@ func CreateFaq(c *gin.Context) {
 	}
 
 	// Validasi menggunakan validator
-	err := config.Validate.Struct(req)
-	if err != nil {
-		errors := []string{}
-		for _, err := range err.(validator.ValidationErrors) {
-			errors = append(errors, fmt.Sprintf("%s is %s", err.Field(), err.Tag()))
+	if err := config.Validate.Struct(req); err != nil {
+		var errors []string
+		for _, e := range err.(validator.ValidationErrors) {
+			errors = append(errors, fmt.Sprintf("%s is %s", e.Field(), e.Tag()))
 		}
 		c.JSON(http.StatusBadRequest, gin.H{"errors": errors})
 		return
 	}
 
-	_, err = config.DB.Exec(`INSERT INTO faqs (question, answer, category_id, created_at, updated_at)
-	VALUES (@p1, @p2, @p3, @p4, @p5)`,
-		question, answer, categoryId, time.Now(), time.Now())
+	// Insert ke database
+	_, err := config.DB.Exec(`
+		INSERT INTO faqs (question, answer, category_id, created_at, updated_at)
+		VALUES ($1, $2, $3, $4, $5)
+	`, question, answer, categoryId, time.Now(), time.Now())
+
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to insert data", "detail": err.Error()})
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error":  "Failed to insert data",
+			"detail": err.Error(),
+		})
 		return
 	}
 
-	c.JSON(http.StatusOK, gin.H{
+	c.JSON(http.StatusCreated, gin.H{
 		"message": "Data created successfully",
 	})
 }
@@ -103,21 +123,23 @@ func UpdateFaq(c *gin.Context) {
 	}
 
 	// Validasi menggunakan validator
-	err = config.Validate.Struct(req)
-	if err != nil {
-		errors := []string{}
-		for _, err := range err.(validator.ValidationErrors) {
-			errors = append(errors, fmt.Sprintf("%s is %s", err.Field(), err.Tag()))
+	if err := config.Validate.Struct(req); err != nil {
+		var errors []string
+		for _, e := range err.(validator.ValidationErrors) {
+			errors = append(errors, fmt.Sprintf("%s is %s", e.Field(), e.Tag()))
 		}
 		c.JSON(http.StatusBadRequest, gin.H{"errors": errors})
 		return
 	}
 
-	// check database
+	// Check data exist
 	var faq model.Faq
-	err = config.DB.QueryRow("SELECT id FROM faqs WHERE id = @p1", sql.Named("p1", id)).Scan(&faq.Id)
+	err = config.DB.QueryRow("SELECT id FROM faqs WHERE id = $1", id).Scan(&faq.Id)
 	if err == sql.ErrNoRows {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Data not found"})
+		return
+	} else if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Database error", "detail": err.Error()})
 		return
 	}
 
@@ -125,8 +147,12 @@ func UpdateFaq(c *gin.Context) {
 	answer := c.PostForm("answer")
 	categoryId := c.PostForm("category_id")
 
-	_, err = config.DB.Exec(`UPDATE faqs SET question = @p1, answer = @p2, category_id = @p3, updated_at = @p4 WHERE id = @p5`,
-		question, answer, categoryId, time.Now(), id)
+	// Update database
+	_, err = config.DB.Exec(`
+		UPDATE faqs
+		SET question = $1, answer = $2, category_id = $3, updated_at = $4
+		WHERE id = $5
+	`, question, answer, categoryId, time.Now(), id)
 
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update data", "detail": err.Error()})
@@ -147,16 +173,19 @@ func DeleteFaq(c *gin.Context) {
 		return
 	}
 
-	// check database
+	// Cek apakah data ada
 	var faq model.Faq
-	err = config.DB.QueryRow("SELECT id FROM faqs WHERE id = @p1", sql.Named("p1", id)).Scan(&faq.Id)
+	err = config.DB.QueryRow("SELECT id FROM faqs WHERE id = $1", id).Scan(&faq.Id)
 	if err == sql.ErrNoRows {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Data not found"})
 		return
+	} else if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Database error", "detail": err.Error()})
+		return
 	}
 
-	_, err = config.DB.Exec(`DELETE FROM faqs WHERE id = @p1`, id)
-
+	// Hapus data
+	_, err = config.DB.Exec("DELETE FROM faqs WHERE id = $1", id)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to delete data", "detail": err.Error()})
 		return

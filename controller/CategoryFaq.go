@@ -65,15 +65,18 @@ func CreateCategoryFaq(c *gin.Context) {
 		return
 	}
 
+	// Upload icon (wajib)
 	file, err := c.FormFile("icon")
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Icon is required"})
 		return
 	}
 
+	// Simpan file ke folder uploads
 	os.MkdirAll("uploads", os.ModePerm)
 	filename := uuid.New().String() + filepath.Ext(file.Filename)
-	savePath := "uploads/" + filename
+	savePath := filepath.Join("uploads", filename)
+
 	if err := c.SaveUploadedFile(file, savePath); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to upload image"})
 		return
@@ -81,9 +84,10 @@ func CreateCategoryFaq(c *gin.Context) {
 
 	icon := "/uploads/" + filename
 
+	// Simpan ke database (PostgreSQL style)
 	_, err = config.DB.Exec(`
 		INSERT INTO category_faqs (category, description, icon, created_at, updated_at)
-		VALUES (@p1, @p2, @p3, @p4, @p5)
+		VALUES ($1, $2, $3, $4, $5)
 	`, category, description, icon, time.Now(), time.Now())
 
 	if err != nil {
@@ -111,17 +115,17 @@ func UpdateCategoryFaq(c *gin.Context) {
 	// Validasi menggunakan validator
 	err := config.Validate.Struct(req)
 	if err != nil {
-		errors := []string{}
-		for _, err := range err.(validator.ValidationErrors) {
-			errors = append(errors, fmt.Sprintf("%s is %s", err.Field(), err.Tag()))
+		var errors []string
+		for _, e := range err.(validator.ValidationErrors) {
+			errors = append(errors, fmt.Sprintf("%s is %s", e.Field(), e.Tag()))
 		}
 		c.JSON(http.StatusBadRequest, gin.H{"errors": errors})
 		return
 	}
 
-	// Ambil data lama untuk dapatkan icon lama
+	// Ambil icon lama
 	var oldIcon string
-	err = config.DB.QueryRow("SELECT icon FROM category_faqs WHERE id = @p1", sql.Named("p1", id)).Scan(&oldIcon)
+	err = config.DB.QueryRow("SELECT icon FROM category_faqs WHERE id = $1", id).Scan(&oldIcon)
 	if err == sql.ErrNoRows {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Category not found"})
 		return
@@ -130,14 +134,15 @@ func UpdateCategoryFaq(c *gin.Context) {
 		return
 	}
 
-	icon := oldIcon // default gunakan icon lama
+	icon := oldIcon // default icon lama
 
+	// Cek apakah user upload file baru
 	file, err := c.FormFile("icon")
 	if err == nil {
-		// Jika file diupload, simpan dan hapus file lama
 		os.MkdirAll("uploads", os.ModePerm)
 		filename := uuid.New().String() + filepath.Ext(file.Filename)
-		savePath := "uploads/" + filename
+		savePath := filepath.Join("uploads", filename)
+
 		if err := c.SaveUploadedFile(file, savePath); err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to upload image"})
 			return
@@ -145,20 +150,20 @@ func UpdateCategoryFaq(c *gin.Context) {
 
 		// Hapus icon lama jika ada
 		if oldIcon != "" {
-			_, imageFile := filepath.Split(oldIcon)
-			imagePath := filepath.Join("uploads", imageFile)
-			if _, err := os.Stat(imagePath); err == nil {
-				_ = os.Remove(imagePath) // jika gagal dihapus, bisa di-log tapi tidak perlu menghentikan proses
+			oldFile := filepath.Join("uploads", filepath.Base(oldIcon))
+			if _, err := os.Stat(oldFile); err == nil {
+				_ = os.Remove(oldFile)
 			}
 		}
 
-		icon = "/uploads/" + filename // set icon baru
+		icon = "/uploads/" + filename
 	}
 
+	// Update data
 	_, err = config.DB.Exec(`
 		UPDATE category_faqs
-		SET category = @p1, description = @p2, icon = @p3, updated_at = @p4
-		WHERE id = @p5
+		SET category = $1, description = $2, icon = $3, updated_at = $4
+		WHERE id = $5
 	`, category, description, icon, time.Now(), id)
 
 	if err != nil {
@@ -166,9 +171,7 @@ func UpdateCategoryFaq(c *gin.Context) {
 		return
 	}
 
-	c.JSON(http.StatusOK, gin.H{
-		"message": "Data updated successfully",
-	})
+	c.JSON(http.StatusOK, gin.H{"message": "Data updated successfully"})
 }
 
 // delete data
@@ -177,34 +180,41 @@ func DeleteCategoryFaq(c *gin.Context) {
 
 	// Ambil data lama untuk dapatkan icon lama
 	var oldIcon string
-	err := config.DB.QueryRow("SELECT icon FROM category_faqs WHERE id = @p1", sql.Named("p1", id)).Scan(&oldIcon)
+	err := config.DB.QueryRow("SELECT icon FROM category_faqs WHERE id = $1", id).Scan(&oldIcon)
 	if err == sql.ErrNoRows {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Category not found"})
 		return
 	} else if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to fetch existing category", "detail": err.Error()})
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error":  "Failed to fetch existing category",
+			"detail": err.Error(),
+		})
 		return
 	}
 
-	// hapus file lama jika ada
+	// Hapus file lama jika ada
 	if oldIcon != "" {
-		_, imageFile := filepath.Split(oldIcon)
+		imageFile := filepath.Base(oldIcon)
 		imagePath := filepath.Join("uploads", imageFile)
+
 		if _, err := os.Stat(imagePath); err == nil {
 			if err := os.Remove(imagePath); err != nil {
-				c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to delete image", "detail": err.Error()})
+				c.JSON(http.StatusInternalServerError, gin.H{
+					"error":  "Failed to delete image file",
+					"detail": err.Error(),
+				})
 				return
 			}
 		}
 	}
 
-	_, err = config.DB.Exec(`
-		DELETE FROM category_faqs
-		WHERE id = @p1
-	`, id)
-
+	// Hapus data dari database
+	_, err = config.DB.Exec("DELETE FROM category_faqs WHERE id = $1", id)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to delete data", "detail": err.Error()})
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error":  "Failed to delete data",
+			"detail": err.Error(),
+		})
 		return
 	}
 

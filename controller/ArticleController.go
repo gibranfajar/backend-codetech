@@ -19,42 +19,66 @@ import (
 
 // get all article
 func GetAllArticle(c *gin.Context) {
-	var article []model.ResponseArticle
+	var articles []model.ResponseArticle
 
 	rows, err := config.DB.Query(`
-		SELECT a.id, a.title, a.slug, a.description, a.thumbnail, a.views, a.created_at, a.updated_at, u.name, c.category
+		SELECT 
+			a.id, a.title, a.slug, a.description, a.thumbnail, a.views, 
+			a.created_at, a.updated_at, 
+			u.name AS user_name, 
+			c.category AS category_name
 		FROM articles a
 		JOIN users u ON a.user_id = u.id
 		JOIN category_articles c ON a.category_id = c.id
+		ORDER BY a.created_at DESC
 	`)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to fetch data", "detail": err.Error()})
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error":  "Failed to fetch data",
+			"detail": err.Error(),
+		})
 		return
 	}
-
-	if rows == nil {
-		c.JSON(http.StatusOK, gin.H{"message": "No data found"})
-	}
+	defer rows.Close()
 
 	for rows.Next() {
 		var art model.ResponseArticle
-		if err := rows.Scan(&art.Id, &art.Title, &art.Slug, &art.Description, &art.Thumbnail, &art.Views, &art.CreatedAt, &art.UpdatedAt, &art.User, &art.Category); err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to fetch data", "detail": err.Error()})
+		if err := rows.Scan(
+			&art.Id,
+			&art.Title,
+			&art.Slug,
+			&art.Description,
+			&art.Thumbnail,
+			&art.Views,
+			&art.CreatedAt,
+			&art.UpdatedAt,
+			&art.User,
+			&art.Category,
+		); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{
+				"error":  "Failed to parse data",
+				"detail": err.Error(),
+			})
 			return
 		}
-		article = append(article, art)
+		articles = append(articles, art)
+	}
+
+	if len(articles) == 0 {
+		c.JSON(http.StatusOK, gin.H{"message": "No data found"})
+		return
 	}
 
 	c.JSON(http.StatusOK, gin.H{
-		"data": article,
+		"data": articles,
 	})
 }
 
 // create data
 func CreateArticle(c *gin.Context) {
 	title := c.PostForm("title")
-	user := c.PostForm("user_id")
-	category := c.PostForm("category_id")
+	userID := c.PostForm("user_id")
+	categoryID := c.PostForm("category_id")
 	description := c.PostForm("description")
 
 	var req model.ArticleRequest
@@ -64,25 +88,30 @@ func CreateArticle(c *gin.Context) {
 	}
 
 	// Validasi menggunakan validator
-	err := config.Validate.Struct(req)
-	if err != nil {
-		errors := []string{}
-		for _, err := range err.(validator.ValidationErrors) {
-			errors = append(errors, fmt.Sprintf("%s is %s", err.Field(), err.Tag()))
+	if err := config.Validate.Struct(req); err != nil {
+		var errors []string
+		for _, e := range err.(validator.ValidationErrors) {
+			errors = append(errors, fmt.Sprintf("%s is %s", e.Field(), e.Tag()))
 		}
 		c.JSON(http.StatusBadRequest, gin.H{"errors": errors})
 		return
 	}
 
+	// Upload file thumbnail
 	file, err := c.FormFile("thumbnail")
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Thumbnail is required"})
 		return
 	}
 
-	os.MkdirAll("uploads", os.ModePerm)
+	// Pastikan folder uploads ada
+	if err := os.MkdirAll("uploads", os.ModePerm); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create upload directory"})
+		return
+	}
+
 	filename := uuid.New().String() + filepath.Ext(file.Filename)
-	savePath := "uploads/" + filename
+	savePath := filepath.Join("uploads", filename)
 	if err := c.SaveUploadedFile(file, savePath); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to upload image"})
 		return
@@ -90,13 +119,17 @@ func CreateArticle(c *gin.Context) {
 
 	thumbnail := "/uploads/" + filename
 
+	// Simpan ke database (PostgreSQL style)
 	_, err = config.DB.Exec(`
-		INSERT INTO articles (title, slug, user_id, category_id, description, thumbnail, created_at, updated_at)
-		VALUES (@p1, @p2, @p3, @p4, @p5, @p6, @p7, @p8)
-	`, title, slug.Make(title), user, category, description, thumbnail, time.Now(), time.Now())
+		INSERT INTO articles (title, slug, user_id, category_id, description, thumbnail, views, created_at, updated_at)
+		VALUES ($1, $2, $3, $4, $5, $6, 0, $7, $8)
+	`, title, slug.Make(title), userID, categoryID, description, thumbnail, time.Now(), time.Now())
 
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to insert data", "detail": err.Error()})
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error":  "Failed to insert data",
+			"detail": err.Error(),
+		})
 		return
 	}
 
@@ -108,9 +141,15 @@ func CreateArticle(c *gin.Context) {
 // update data
 func UpdateArticle(c *gin.Context) {
 	idParam := c.Param("id")
+	id, err := strconv.Atoi(idParam)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid ID"})
+		return
+	}
+
 	title := c.PostForm("title")
-	user := c.PostForm("user_id")
-	category := c.PostForm("category_id")
+	userID := c.PostForm("user_id")
+	categoryID := c.PostForm("category_id")
 	description := c.PostForm("description")
 
 	var req model.ArticleRequest
@@ -119,30 +158,19 @@ func UpdateArticle(c *gin.Context) {
 		return
 	}
 
-	// Validasi menggunakan validator
-	err := config.Validate.Struct(req)
-	if err != nil {
-		errors := []string{}
-		for _, err := range err.(validator.ValidationErrors) {
-			errors = append(errors, fmt.Sprintf("%s is %s", err.Field(), err.Tag()))
+	// Validasi data
+	if err := config.Validate.Struct(req); err != nil {
+		var errors []string
+		for _, e := range err.(validator.ValidationErrors) {
+			errors = append(errors, fmt.Sprintf("%s is %s", e.Field(), e.Tag()))
 		}
 		c.JSON(http.StatusBadRequest, gin.H{"errors": errors})
 		return
 	}
 
-	id, err := strconv.Atoi(idParam)
-	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid ID"})
-		return
-	}
-
-	// Ambil data artikel termasuk thumbnail
+	// Ambil data artikel lama
 	var article model.Article
-	err = config.DB.QueryRow(
-		"SELECT id, thumbnail FROM articles WHERE id = @p1",
-		sql.Named("p1", id),
-	).Scan(&article.Id, &article.Thumbnail)
-
+	err = config.DB.QueryRow(`SELECT id, thumbnail FROM articles WHERE id = $1`, id).Scan(&article.Id, &article.Thumbnail)
 	if err == sql.ErrNoRows {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Data not found"})
 		return
@@ -151,43 +179,48 @@ func UpdateArticle(c *gin.Context) {
 		return
 	}
 
-	// Default thumbnail tetap yang lama
+	// Gunakan thumbnail lama secara default
 	thumbnail := article.Thumbnail
 
-	// Cek apakah ada file baru di-upload
+	// Jika ada file baru di-upload, ganti thumbnail
 	file, err := c.FormFile("thumbnail")
 	if err == nil {
-		// Upload file baru
-		os.MkdirAll("uploads", os.ModePerm)
+		if err := os.MkdirAll("uploads", os.ModePerm); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create upload directory"})
+			return
+		}
+
 		filename := uuid.New().String() + filepath.Ext(file.Filename)
 		savePath := filepath.Join("uploads", filename)
-
 		if err := c.SaveUploadedFile(file, savePath); err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to upload image"})
 			return
 		}
 
-		// Hapus file lama
+		// Hapus thumbnail lama (jika ada)
 		if article.Thumbnail != "" {
 			oldFilePath := filepath.Join("uploads", filepath.Base(article.Thumbnail))
 			if _, err := os.Stat(oldFilePath); err == nil {
-				os.Remove(oldFilePath)
+				_ = os.Remove(oldFilePath)
 			}
 		}
 
-		// Set thumbnail baru
 		thumbnail = "/uploads/" + filename
 	}
 
-	// Update database
+	// Update data ke database
 	_, err = config.DB.Exec(`
 		UPDATE articles
-		SET title = @p1, slug = @p2, user_id = @p3, category_id = @p4, description = @p5, thumbnail = @p6, updated_at = @p7
-		WHERE id = @p8
-	`, title, slug.Make(title), user, category, description, thumbnail, time.Now(), id)
+		SET title = $1, slug = $2, user_id = $3, category_id = $4,
+			description = $5, thumbnail = $6, updated_at = $7
+		WHERE id = $8
+	`, title, slug.Make(title), userID, categoryID, description, thumbnail, time.Now(), id)
 
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update data", "detail": err.Error()})
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error":  "Failed to update data",
+			"detail": err.Error(),
+		})
 		return
 	}
 
@@ -203,23 +236,30 @@ func DeleteArticle(c *gin.Context) {
 		return
 	}
 
-	// check database
+	// Cek apakah data ada
 	var article model.Article
-	err = config.DB.QueryRow("SELECT id FROM articles WHERE id = @p1", sql.Named("p1", id)).Scan(&article.Id)
+	err = config.DB.QueryRow(`SELECT id, thumbnail FROM articles WHERE id = $1`, id).Scan(&article.Id, &article.Thumbnail)
 	if err == sql.ErrNoRows {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Data not found"})
 		return
+	} else if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Database error", "detail": err.Error()})
+		return
 	}
 
-	// delete file lama jika ada
-	var oldImage string
-	err = config.DB.QueryRow("SELECT thumbnail FROM articles WHERE id = @p1", sql.Named("p1", id)).Scan(&oldImage)
-	if err == nil && oldImage != "" {
-		_, filename := filepath.Split(oldImage)
-		os.Remove("uploads/" + filename)
+	// Hapus file thumbnail jika ada
+	if article.Thumbnail != "" {
+		oldFilePath := filepath.Join("uploads", filepath.Base(article.Thumbnail))
+		if _, err := os.Stat(oldFilePath); err == nil {
+			if err := os.Remove(oldFilePath); err != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to delete image", "detail": err.Error()})
+				return
+			}
+		}
 	}
 
-	_, err = config.DB.Exec("DELETE FROM articles WHERE id = @p1", sql.Named("p1", id))
+	// Hapus data dari database
+	_, err = config.DB.Exec(`DELETE FROM articles WHERE id = $1`, id)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to delete data", "detail": err.Error()})
 		return
@@ -234,12 +274,12 @@ func DeleteArticle(c *gin.Context) {
 func IncrementArticleViews(c *gin.Context) {
 	slugParam := c.Param("slug")
 
-	// Update views: tambahkan 1 ke kolom views
+	// Update kolom views (+1)
 	result, err := config.DB.Exec(`
 		UPDATE articles
 		SET views = views + 1
-		WHERE slug = @p1
-	`, sql.Named("p1", slugParam))
+		WHERE slug = $1
+	`, slugParam)
 
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{

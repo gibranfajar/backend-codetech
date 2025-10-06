@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"fmt"
 	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/gibranfajar/backend-codetech/config"
@@ -51,9 +52,8 @@ func CreateCategoryArticle(c *gin.Context) {
 	}
 
 	// Validasi menggunakan validator
-	err := config.Validate.Struct(req)
-	if err != nil {
-		errors := []string{}
+	if err := config.Validate.Struct(req); err != nil {
+		var errors []string
 		for _, err := range err.(validator.ValidationErrors) {
 			errors = append(errors, fmt.Sprintf("%s is %s", err.Field(), err.Tag()))
 		}
@@ -61,12 +61,17 @@ func CreateCategoryArticle(c *gin.Context) {
 		return
 	}
 
-	_, err = config.DB.Exec(`
+	// Simpan ke database (PostgreSQL style)
+	_, err := config.DB.Exec(`
 		INSERT INTO category_articles (category, created_at, updated_at)
-		VALUES (@p1, @p2, @p3)
+		VALUES ($1, $2, $3)
 	`, category, time.Now(), time.Now())
+
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to insert data", "detail": err.Error()})
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error":  "Failed to insert data",
+			"detail": err.Error(),
+		})
 		return
 	}
 
@@ -77,7 +82,13 @@ func CreateCategoryArticle(c *gin.Context) {
 
 // update category article
 func UpdateCategoryArticle(c *gin.Context) {
-	id := c.Param("id")
+	idParam := c.Param("id")
+	id, err := strconv.Atoi(idParam)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid ID"})
+		return
+	}
+
 	category := c.PostForm("category")
 
 	var req model.CategoryArticleRequest
@@ -87,9 +98,8 @@ func UpdateCategoryArticle(c *gin.Context) {
 	}
 
 	// Validasi menggunakan validator
-	err := config.Validate.Struct(req)
-	if err != nil {
-		errors := []string{}
+	if err := config.Validate.Struct(req); err != nil {
+		var errors []string
 		for _, err := range err.(validator.ValidationErrors) {
 			errors = append(errors, fmt.Sprintf("%s is %s", err.Field(), err.Tag()))
 		}
@@ -97,18 +107,22 @@ func UpdateCategoryArticle(c *gin.Context) {
 		return
 	}
 
-	// check database
-	var categoryArticle model.CategoryArticle
-	err = config.DB.QueryRow("SELECT id FROM category_articles WHERE id = @p1", sql.Named("p1", id)).Scan(&categoryArticle.Id)
+	// Cek apakah data ada di database
+	var existingID int
+	err = config.DB.QueryRow(`SELECT id FROM category_articles WHERE id = $1`, id).Scan(&existingID)
 	if err == sql.ErrNoRows {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Data not found"})
 		return
+	} else if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to fetch data", "detail": err.Error()})
+		return
 	}
 
+	// Update data
 	_, err = config.DB.Exec(`
 		UPDATE category_articles
-		SET category = @p1, updated_at = @p2
-		WHERE id = @p3
+		SET category = $1, updated_at = $2
+		WHERE id = $3
 	`, category, time.Now(), id)
 
 	if err != nil {
@@ -123,23 +137,34 @@ func UpdateCategoryArticle(c *gin.Context) {
 
 // delete category article
 func DeleteCategoryArticle(c *gin.Context) {
-	id := c.Param("id")
-
-	// check database
-	var categoryArticle model.CategoryArticle
-	err := config.DB.QueryRow("SELECT id FROM category_articles WHERE id = @p1", sql.Named("p1", id)).Scan(&categoryArticle.Id)
-	if err == sql.ErrNoRows {
-		c.JSON(http.StatusNotFound, gin.H{"error": "Data not found"})
+	idParam := c.Param("id")
+	id, err := strconv.Atoi(idParam)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid ID"})
 		return
 	}
 
-	_, err = config.DB.Exec(`
-		DELETE FROM category_articles
-		WHERE id = @p1
-	`, id)
+	// Cek apakah data ada di database
+	var existingID int
+	err = config.DB.QueryRow(`SELECT id FROM category_articles WHERE id = $1`, id).Scan(&existingID)
+	if err == sql.ErrNoRows {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Data not found"})
+		return
+	} else if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error":  "Failed to fetch data",
+			"detail": err.Error(),
+		})
+		return
+	}
 
+	// Hapus data
+	_, err = config.DB.Exec(`DELETE FROM category_articles WHERE id = $1`, id)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to delete data", "detail": err.Error()})
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error":  "Failed to delete data",
+			"detail": err.Error(),
+		})
 		return
 	}
 

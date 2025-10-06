@@ -15,25 +15,36 @@ import (
 
 // get all data
 func GetAllContact(c *gin.Context) {
-	var contact model.Contact
+	var contacts []model.Contact
 
-	err := config.DB.QueryRow("SELECT id, phone, email, address, office_operation, created_at, updated_at FROM contacts").Scan(
-		&contact.Id, &contact.Phone, &contact.Email, &contact.Address, &contact.OfficeOperation, &contact.CreatedAt, &contact.UpdatedAt,
-	)
-
+	rows, err := config.DB.Query(`
+		SELECT id, phone, email, address, office_operation, created_at, updated_at 
+		FROM contacts
+	`)
 	if err != nil {
-		if err == sql.ErrNoRows {
-			c.JSON(http.StatusOK, gin.H{"message": "No data found"})
-			return
-		}
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to fetch data", "detail": err.Error()})
 		return
 	}
+	defer rows.Close()
 
-	c.JSON(http.StatusOK, gin.H{
-		"data": contact,
-	})
+	for rows.Next() {
+		var contact model.Contact
+		if err := rows.Scan(
+			&contact.Id, &contact.Phone, &contact.Email, &contact.Address, &contact.OfficeOperation, &contact.CreatedAt, &contact.UpdatedAt,
+		); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to parse data", "detail": err.Error()})
+			return
+		}
+		contacts = append(contacts, contact)
+	}
 
+	// Cek apakah ada data
+	if len(contacts) == 0 {
+		c.JSON(http.StatusOK, gin.H{"message": "No data found", "data": []model.Contact{}})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"data": contacts})
 }
 
 // create data
@@ -50,9 +61,8 @@ func CreateContact(c *gin.Context) {
 	}
 
 	// Validasi menggunakan validator
-	err := config.Validate.Struct(req)
-	if err != nil {
-		errors := []string{}
+	if err := config.Validate.Struct(req); err != nil {
+		var errors []string
 		for _, err := range err.(validator.ValidationErrors) {
 			errors = append(errors, fmt.Sprintf("%s is %s", err.Field(), err.Tag()))
 		}
@@ -60,25 +70,29 @@ func CreateContact(c *gin.Context) {
 		return
 	}
 
-	// check apakah data sudah ada atau tidak
-	var contact model.Contact
-	err = config.DB.QueryRow("SELECT id FROM contacts WHERE phone = @p1", sql.Named("p1", phone)).Scan(&contact.Id)
+	// Cek apakah data dengan phone sudah ada
+	var existingID int
+	err := config.DB.QueryRow(`SELECT id FROM contacts WHERE phone = $1`, phone).Scan(&existingID)
 	if err == nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Data already exists"})
 		return
+	} else if err != sql.ErrNoRows {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to check existing data", "detail": err.Error()})
+		return
 	}
 
-	_, err = config.DB.Exec(`INSERT INTO contacts (phone, email, address, office_operation, created_at, updated_at) VALUES (@p1, @p2, @p3, @p4, @p5, @p6)`,
-		phone, email, address, officeOperation, time.Now(), time.Now())
+	// Insert ke database
+	_, err = config.DB.Exec(`
+		INSERT INTO contacts (phone, email, address, office_operation, created_at, updated_at)
+		VALUES ($1, $2, $3, $4, $5, $6)
+	`, phone, email, address, officeOperation, time.Now(), time.Now())
 
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to insert data", "detail": err.Error()})
 		return
 	}
 
-	c.JSON(http.StatusCreated, gin.H{
-		"message": "Data created successfully",
-	})
+	c.JSON(http.StatusCreated, gin.H{"message": "Data created successfully"})
 }
 
 // update data
@@ -97,9 +111,8 @@ func UpdateContact(c *gin.Context) {
 	}
 
 	// Validasi menggunakan validator
-	err = config.Validate.Struct(req)
-	if err != nil {
-		errors := []string{}
+	if err := config.Validate.Struct(req); err != nil {
+		var errors []string
 		for _, err := range err.(validator.ValidationErrors) {
 			errors = append(errors, fmt.Sprintf("%s is %s", err.Field(), err.Tag()))
 		}
@@ -112,25 +125,30 @@ func UpdateContact(c *gin.Context) {
 	address := c.PostForm("address")
 	officeOperation := c.PostForm("office_operation")
 
-	// check apakah data ada dengan id tersebut
-	var contact model.Contact
-	err = config.DB.QueryRow("SELECT id FROM contacts WHERE id = @p1", sql.Named("p1", id)).Scan(&contact.Id)
+	// Cek apakah data ada
+	var existingID int
+	err = config.DB.QueryRow(`SELECT id FROM contacts WHERE id = $1`, id).Scan(&existingID)
 	if err == sql.ErrNoRows {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Data not found"})
 		return
+	} else if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to check existing contact", "detail": err.Error()})
+		return
 	}
 
-	_, err = config.DB.Exec(`UPDATE contacts SET phone = @p1, email = @p2, address = @p3, office_operation = @p4, updated_at = @p5 WHERE id = @p6`,
-		phone, email, address, officeOperation, time.Now(), id)
+	// Update data
+	_, err = config.DB.Exec(`
+		UPDATE contacts 
+		SET phone = $1, email = $2, address = $3, office_operation = $4, updated_at = $5
+		WHERE id = $6
+	`, phone, email, address, officeOperation, time.Now(), id)
 
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update data", "detail": err.Error()})
 		return
 	}
 
-	c.JSON(http.StatusOK, gin.H{
-		"message": "Data updated successfully",
-	})
+	c.JSON(http.StatusOK, gin.H{"message": "Data updated successfully"})
 }
 
 // delete data
@@ -142,23 +160,31 @@ func DeleteContact(c *gin.Context) {
 		return
 	}
 
-	// check apakah data ada dengan id tersebut
-	var contact model.Contact
-	err = config.DB.QueryRow("SELECT id FROM contacts WHERE id = @p1", sql.Named("p1", id)).Scan(&contact.Id)
+	// Cek apakah data dengan ID tersebut ada
+	var existingID int
+	err = config.DB.QueryRow(`SELECT id FROM contacts WHERE id = $1`, id).Scan(&existingID)
 	if err == sql.ErrNoRows {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Data not found"})
 		return
+	} else if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error":  "Failed to fetch contact",
+			"detail": err.Error(),
+		})
+		return
 	}
 
-	_, err = config.DB.Exec(`DELETE FROM contacts WHERE id = @p1`, id)
-
+	// Hapus data
+	_, err = config.DB.Exec(`DELETE FROM contacts WHERE id = $1`, id)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to delete data", "detail": err.Error()})
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error":  "Failed to delete data",
+			"detail": err.Error(),
+		})
 		return
 	}
 
 	c.JSON(http.StatusOK, gin.H{
 		"message": "Data deleted successfully",
 	})
-
 }

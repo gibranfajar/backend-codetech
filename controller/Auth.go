@@ -1,7 +1,6 @@
 package controller
 
 import (
-	"database/sql"
 	"net/http"
 	"time"
 
@@ -12,15 +11,16 @@ import (
 	"golang.org/x/crypto/bcrypt"
 )
 
-var jwtSecret = []byte("secret-codetech") // ganti dengan secret yang aman
+var jwtSecret = []byte("secret-codetech") // sebaiknya ambil dari ENV
 
 func Login(c *gin.Context) {
 	email := c.PostForm("email")
 	password := c.PostForm("password")
 
 	var user model.User
-	err := config.DB.QueryRow("SELECT id, email, password FROM users WHERE email = @p1", sql.Named("p1", email)).
-		Scan(&user.Id, &user.Email, &user.Password)
+	err := config.DB.QueryRow(
+		"SELECT id, email, password FROM users WHERE email = $1", email,
+	).Scan(&user.Id, &user.Email, &user.Password)
 
 	if err != nil {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid email or password"})
@@ -34,7 +34,7 @@ func Login(c *gin.Context) {
 		return
 	}
 
-	// Generate JWT token expired in 1 hour
+	// Generate JWT token (expired in 1 hour)
 	expirationTime := time.Now().Add(1 * time.Hour)
 
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{
@@ -43,8 +43,7 @@ func Login(c *gin.Context) {
 		"iat":     time.Now().Unix(),
 	})
 
-	// Gunakan secret key yang sesuai dengan middleware
-	tokenString, err := token.SignedString([]byte("secret-codetech"))
+	tokenString, err := token.SignedString(jwtSecret)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to generate token"})
 		return
@@ -54,4 +53,5 @@ func Login(c *gin.Context) {
 		"message": "Login successfully",
 		"token":   tokenString,
 	})
+
 }

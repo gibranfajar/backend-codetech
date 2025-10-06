@@ -71,16 +71,14 @@ func GetUser(c *gin.Context) {
 
 // create data
 func CreateUser(c *gin.Context) {
-
 	var req model.UserRequest
-
-	//  Validasi menggunakan ShouldBind yang berfungsi untuk memeriksa apakah semua field yang diperlukan terisi
+	// Validasi request body
 	if err := c.ShouldBind(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
 
-	// Validasi menggunakan validator
+	// Validasi dengan validator
 	err := config.Validate.Struct(req)
 	if err != nil {
 		errors := []string{}
@@ -96,22 +94,22 @@ func CreateUser(c *gin.Context) {
 	password := c.PostForm("password")
 	role := c.PostForm("role")
 
-	// hash password
+	// Hash password
 	hashedPassword, err := utils.HashPassword(password)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to hash password"})
 		return
 	}
 
-	// check apakah data sudah ada atau tidak
+	// Cek apakah email sudah ada
 	var user model.User
-	err = config.DB.QueryRow("SELECT id FROM users WHERE email = @p1", sql.Named("p1", email)).Scan(&user.Id)
+	err = config.DB.QueryRow("SELECT id FROM users WHERE email = $1", email).Scan(&user.Id)
 	if err == nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Data already exists"})
 		return
 	}
 
-	//upload profile
+	// Upload profile
 	file, err := c.FormFile("profile")
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Profile image is required"})
@@ -126,10 +124,11 @@ func CreateUser(c *gin.Context) {
 		return
 	}
 
+	// Insert data ke PostgreSQL
 	_, err = config.DB.Exec(`
-		INSERT INTO users (name, email, password, profile, role, created_at, updated_at)
-		VALUES (@p1, @p2, @p3, @p4, @p5, @p6, @p7)
-	`, name, email, hashedPassword, "/uploads/"+filename, role, time.Now(), time.Now())
+	INSERT INTO users (name, email, password, profile, role, created_at, updated_at)
+	VALUES ($1, $2, $3, $4, $5, $6, $7)
+`, name, email, hashedPassword, "/uploads/"+filename, role, time.Now(), time.Now())
 
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to insert data", "detail": err.Error()})
@@ -152,7 +151,6 @@ func UpdateUser(c *gin.Context) {
 	}
 
 	var req model.UserRequestUpdate
-
 	if err := c.ShouldBind(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
@@ -173,33 +171,40 @@ func UpdateUser(c *gin.Context) {
 	password := c.PostForm("password")
 	role := c.PostForm("role")
 
+	// Cek apakah user dengan ID tersebut ada
 	var user model.User
-	err = config.DB.QueryRow("SELECT id FROM users WHERE id = @p1", sql.Named("p1", id)).Scan(&user.Id)
+	err = config.DB.QueryRow("SELECT id FROM users WHERE id = $1", id).Scan(&user.Id)
 	if err == sql.ErrNoRows {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Data not found"})
 		return
-	}
-
-	var userByEmail model.User
-	err = config.DB.QueryRow("SELECT id FROM users WHERE email = @p1 AND id != @p2", sql.Named("p1", email), sql.Named("p2", id)).Scan(&userByEmail.Id)
-	if err == nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Email already exists"})
+	} else if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Database error"})
 		return
 	}
 
-	// Ambil gambar lama dari database
+	// Cek apakah email sudah digunakan oleh user lain
+	var existingID int
+	err = config.DB.QueryRow("SELECT id FROM users WHERE email = $1 AND id != $2", email, id).Scan(&existingID)
+	if err == nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Email already exists"})
+		return
+	} else if err != sql.ErrNoRows {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Database error"})
+		return
+	}
+
+	// Ambil gambar lama
 	var oldImage string
-	err = config.DB.QueryRow("SELECT profile FROM users WHERE id = @p1", sql.Named("p1", id)).Scan(&oldImage)
+	err = config.DB.QueryRow("SELECT profile FROM users WHERE id = $1", id).Scan(&oldImage)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to get old profile"})
 		return
 	}
 
-	// Cek apakah ada file baru yang diupload
+	// Upload file baru jika ada
 	file, err := c.FormFile("profile")
 	var profilePath string
 	if err == nil {
-		// Upload file baru
 		os.MkdirAll("uploads", os.ModePerm)
 		filename := uuid.New().String() + filepath.Ext(file.Filename)
 		savePath := "uploads/" + filename
@@ -215,21 +220,14 @@ func UpdateUser(c *gin.Context) {
 			os.Remove("uploads/" + oldFile)
 		}
 	} else {
-		// Gunakan gambar lama
 		profilePath = oldImage
 	}
 
-	// Bangun query dan parameter secara dinamis
+	// Build query PostgreSQL
 	query := `
-	UPDATE users
-	SET name = @name, email = @email, profile = @profile, role = @role, updated_at = @updated_at`
-	args := []interface{}{
-		sql.Named("name", name),
-		sql.Named("email", email),
-		sql.Named("profile", profilePath),
-		sql.Named("role", role),
-		sql.Named("updated_at", time.Now()),
-	}
+		UPDATE users
+		SET name = $1, email = $2, profile = $3, role = $4, updated_at = $5`
+	args := []interface{}{name, email, profilePath, role, time.Now()}
 
 	if password != "" {
 		hashedPassword, err := utils.HashPassword(password)
@@ -237,22 +235,23 @@ func UpdateUser(c *gin.Context) {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to hash password"})
 			return
 		}
-		query += `, password = @password`
-		args = append(args, sql.Named("password", hashedPassword))
+		query += `, password = $6 WHERE id = $7`
+		args = append(args, hashedPassword, id)
+	} else {
+		query += ` WHERE id = $6`
+		args = append(args, id)
 	}
-
-	query += ` WHERE id = @id`
-	args = append(args, sql.Named("id", id))
 
 	_, err = config.DB.Exec(query, args...)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update data", "detail": err.Error()})
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error":  "Failed to update data",
+			"detail": err.Error(),
+		})
 		return
 	}
 
-	c.JSON(http.StatusOK, gin.H{
-		"message": "Data updated successfully",
-	})
+	c.JSON(http.StatusOK, gin.H{"message": "Data updated successfully"})
 }
 
 // delete data
@@ -264,25 +263,32 @@ func DeleteUser(c *gin.Context) {
 		return
 	}
 
-	// check apakah data ada dengan id tersebut
+	// Cek apakah data ada
 	var user model.User
-	err = config.DB.QueryRow("SELECT id FROM users WHERE id = @p1", sql.Named("p1", id)).Scan(&user.Id)
+	err = config.DB.QueryRow("SELECT id FROM users WHERE id = $1", id).Scan(&user.Id)
 	if err == sql.ErrNoRows {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Data not found"})
 		return
+	} else if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Database error"})
+		return
 	}
 
-	// hapus file lama jika ada
+	// Hapus file lama jika ada
 	var oldImage string
-	err = config.DB.QueryRow("SELECT profile FROM users WHERE id = @p1", sql.Named("p1", id)).Scan(&oldImage)
+	err = config.DB.QueryRow("SELECT profile FROM users WHERE id = $1", id).Scan(&oldImage)
 	if err == nil && oldImage != "" {
 		_, filename := filepath.Split(oldImage)
 		os.Remove("uploads/" + filename)
 	}
 
-	_, err = config.DB.Exec("DELETE FROM users WHERE id = @p1", sql.Named("p1", id))
+	// Hapus data dari database
+	_, err = config.DB.Exec("DELETE FROM users WHERE id = $1", id)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to delete data", "detail": err.Error()})
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error":  "Failed to delete data",
+			"detail": err.Error(),
+		})
 		return
 	}
 
@@ -298,10 +304,14 @@ func GetUserNotAdmin(c *gin.Context) {
 	rows, err := config.DB.Query(`
 		SELECT id, name, email, profile, role, created_at, updated_at
 		FROM users
-		WHERE role != 'admin' AND role != 'superadmin'
+		WHERE role NOT IN ('admin', 'superadmin')
+		ORDER BY created_at DESC
 	`)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to fetch data", "detail": err.Error()})
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error":  "Failed to fetch data",
+			"detail": err.Error(),
+		})
 		return
 	}
 	defer rows.Close()
@@ -309,10 +319,22 @@ func GetUserNotAdmin(c *gin.Context) {
 	for rows.Next() {
 		var user model.UserResponse
 		if err := rows.Scan(&user.Id, &user.Name, &user.Email, &user.Profile, &user.Role, &user.CreatedAt, &user.UpdatedAt); err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to scan data", "detail": err.Error()})
+			c.JSON(http.StatusInternalServerError, gin.H{
+				"error":  "Failed to scan data",
+				"detail": err.Error(),
+			})
 			return
 		}
 		users = append(users, user)
+	}
+
+	// Cek error setelah iterasi
+	if err := rows.Err(); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error":  "Row iteration error",
+			"detail": err.Error(),
+		})
+		return
 	}
 
 	if len(users) == 0 {
