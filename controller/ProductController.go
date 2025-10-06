@@ -52,7 +52,7 @@ func GetAllProduct(c *gin.Context) {
 
 	// Cek apakah ada data
 	if len(products) == 0 {
-		c.JSON(http.StatusOK, gin.H{"message": "No data found", "data": []model.Product{}})
+		c.JSON(http.StatusOK, gin.H{"data": []interface{}{}})
 		return
 	}
 

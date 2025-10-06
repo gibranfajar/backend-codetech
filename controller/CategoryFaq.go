@@ -26,7 +26,8 @@ func GetAllCategoryFaq(c *gin.Context) {
 	}
 
 	if rows == nil {
-		c.JSON(http.StatusOK, gin.H{"message": "No data found"})
+		c.JSON(http.StatusOK, gin.H{"data": []interface{}{}})
+		return
 	}
 
 	for rows.Next() {

@@ -39,7 +39,7 @@ func GetAllServices(c *gin.Context) {
 	}
 
 	if len(services) == 0 {
-		c.JSON(http.StatusOK, gin.H{"message": "No data found"})
+		c.JSON(http.StatusOK, gin.H{"data": []interface{}{}})
 		return
 	}
 

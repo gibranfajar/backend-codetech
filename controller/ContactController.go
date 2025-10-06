@@ -40,7 +40,7 @@ func GetAllContact(c *gin.Context) {
 
 	// Cek apakah ada data
 	if len(contacts) == 0 {
-		c.JSON(http.StatusOK, gin.H{"message": "No data found", "data": []model.Contact{}})
+		c.JSON(http.StatusOK, gin.H{"data": []interface{}{}})
 		return
 	}
 

@@ -37,7 +37,7 @@ func GetAllAbout(c *gin.Context) {
 
 	if err != nil {
 		if err == sql.ErrNoRows {
-			c.JSON(http.StatusOK, gin.H{"message": "No data found"})
+			c.JSON(http.StatusOK, gin.H{"data": []interface{}{}})
 			return
 		}
 		c.JSON(http.StatusInternalServerError, gin.H{

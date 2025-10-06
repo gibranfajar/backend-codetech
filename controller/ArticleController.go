@@ -65,7 +65,7 @@ func GetAllArticle(c *gin.Context) {
 	}
 
 	if len(articles) == 0 {
-		c.JSON(http.StatusOK, gin.H{"message": "No data found"})
+		c.JSON(http.StatusOK, gin.H{"data": []interface{}{}})
 		return
 	}
 
